@@ -4678,8 +4678,21 @@ function backToRoom() {
 }
 
 /* ---- human input (local players, host, and clients) ---- */
+/* Type-ahead: with one local player, the box stays open during other turns.
+   Enter queues the draft and it is sent the moment the puffer reaches you. */
+const PRE = { cat: -1, q: false, mine: false };
+function preOk() {
+  if (!G || G.phase !== 'turn' || PRE.cat !== G.catNo || G.spectator || myCount() !== 1) return false;
+  const mine = G.players.find(x => x.me);
+  return !!(mine && mine.alive);
+}
+function setQueued(on) {
+  PRE.q = on;
+  $('answerIn').classList.toggle('good', on);
+}
 $('answerIn').addEventListener('input', () => {
   SFX.key(false);
+  if (PRE.q) setQueued(false);
   if (!G || G.phase !== 'turn' || !G.players[G.turn] || !G.players[G.turn].me) return;
   const v = $('answerIn').value;
   if (isHost()) setTyping(G.turn, v);
@@ -4689,12 +4702,18 @@ $('answerIn').addEventListener('input', () => {
     if (t) say(G.turn, esc(t), 'typing'); else clearSay(G.turn);
   }
 });
-$('answerForm').addEventListener('submit', e => {
-  e.preventDefault();
+$('answerForm').addEventListener('submit', e => { e.preventDefault(); submitAnswer(); });
+function submitAnswer() {
   if (!G || G.phase !== 'turn') return;
   const p = G.players[G.turn];
-  if (!p || !p.me) return;
   const inp = $('answerIn');
+  if (!p || !p.me) {
+    if (preOk() && inp.value.trim()) {
+      setQueued(true);
+      $('status').innerHTML = '<span class="good">queued · sends the moment the puffer reaches you</span>';
+    }
+    return;
+  }
   const typed = inp.value;
   if (!typed.trim()) return;
   if (isClient()) {
@@ -4714,7 +4733,7 @@ $('answerForm').addEventListener('submit', e => {
   }
   const [kind, msg] = feedbackFor(res, typed);
   showFeedback(kind, msg);
-});
+}
 function showFeedback(kind, msg) {
   $('status').innerHTML = `<span class="bad">${esc(msg)}</span>`;
   if (kind === 'used') SFX.used(); else if (kind === 'ambiguous') SFX.hmm(); else SFX.wrong();
@@ -4859,6 +4878,7 @@ function applyState(st) {
 async function revealPrompt(gen) {
   G.said = G.said || [];
   renderSeats();
+  $('answerIn').value = ''; PRE.cat = -1; PRE.q = false; PRE.mine = false;
   setInput(false);
   $('status').innerHTML = 'new category incoming';
   $('pLabel').textContent = `Category ${G.catNo}`;
@@ -4891,22 +4911,36 @@ function turnVisual() {
   renderSeats();
   updateHud();
   const p = G.players[G.turn];
-  $('answerIn').value = '';
+  const inp = $('answerIn');
+  // drafts carry over between turns within a category, but not to a new one or between hot-seat players
+  if (PRE.cat !== G.catNo || myCount() !== 1 || PRE.mine) { inp.value = ''; PRE.cat = G.catNo; PRE.q = false; }
+  PRE.mine = p.me;
+  const focus = () => setTimeout(() => { if (!inp.disabled) inp.focus({ preventScroll: true }); }, 0);
   if (p.me) {
+    const queued = PRE.q && inp.value.trim();
+    PRE.q = false;
     setInput(true);
     $('status').innerHTML = myCount() > 1 ? `▸ <b>${esc(p.name)}'s puffer</b> · type an answer` : '▸ <b>your puffer</b> · type an answer';
     SFX.yourTurn();
-    setTimeout(() => { if (!$('answerIn').disabled) $('answerIn').focus({ preventScroll: true }); }, 0);
+    if (queued) {
+      const tid = G.turnId;
+      setTimeout(() => { if (G && G.turnId === tid && G.phase === 'turn') submitAnswer(); }, 150);
+    }
+    focus();
   } else {
     setInput(false, G.spectator ? 'watching · you play next game' : `${p.name} has the puffer…`);
     $('status').innerHTML = `▸ <b>${esc(p.name)}</b> has the puffer`;
+    focus();
   }
 }
 function setInput(enabled, placeholder) {
   const inp = $('answerIn');
-  inp.disabled = !enabled; $('answerBtn').disabled = !enabled;
-  inp.placeholder = placeholder || (enabled ? 'your puffer · type!' : '');
+  const pre = !enabled && preOk();
+  inp.disabled = !enabled && !pre; $('answerBtn').disabled = inp.disabled;
+  $('answerBtn').textContent = pre ? 'Queue' : 'Send';
+  inp.placeholder = pre ? 'type ahead · Enter queues it' : placeholder || (enabled ? 'your puffer · type!' : '');
   inp.classList.remove('bad', 'good');
+  if (pre && PRE.q) inp.classList.add('good');
 }
 function logLine(html) {
   const li = document.createElement('li');
